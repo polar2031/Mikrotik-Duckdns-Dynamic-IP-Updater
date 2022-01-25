@@ -1,66 +1,80 @@
-#----------SCRIPT INFORMATION---------------------------------------------------
-#
-# Script:  Beeyev DuckDNS.org Dynamic DNS Update Script
-# Version: 1.2
-# Created: 29/07/2019
-# Updated: 06/06/2021
-# Author:  Alexander Tebiev
-# Website: https://github.com/beeyev
-#
 #----------MODIFY THIS SECTION AS NEEDED----------------------------------------
-
-
 # DuckDNS Sub Domain
 :local duckdnsSubDomain "PUT-SUBDOMAIN-HERE"
 
 # DuckDNS Token
 :local duckdnsToken "PUT-TOKEN-HERE"
 
-# Set true if you want to use IPv6
-:local ipv6mode false;
+# IP Version
+# Set true (without quotes) for ip version you need to update
+:local ipv4Mode false;
+:local ipv6Mode false;
 
-# Online services which respond with your IPv4, two for redundancy
-:local ipDetectService1 "https://api.ipify.org/"
-:local ipDetectService2 "https://api4.my-ip.io/ip.txt"
+# Interface Argument
+# For IPv4 (no need to change if you don't need ipv4)
+:local wanInterface "PUT-WAN-INTERFACE"
+# For IPv6 (no need to change if you don't need ipv6)
+:local lanInterface "PUT-LAN-INTERFACE"
+:local ipv6Pool "IPV6-ADDRESS-POOL"
+#----------End Section----------------------------------------------------------
 
-# Online services which respond with your IPv6, two for redundancy
-:local ipv6DetectService1 "https://api64.ipify.org"
-:local ipv6DetectService2 "https://api6.my-ip.io/ip.txt"
+:local currentIPv4
+:local currentIPv6
+:local previousIPv4
+:local previousIPv6
 
-
-#-------------------------------------------------------------------------------
-
-:local previousIP; :local currentIP
-# DuckDNS Full Domain (FQDN)
-:local duckdnsFullDomain "$duckdnsSubDomain.duckdns.org"
-
-:log warning message="START: DuckDNS.org DDNS Update"
-
-if ($ipv6mode = true) do={
-	:set ipDetectService1 $ipv6DetectService1;
-	:set ipDetectService2 $ipv6DetectService2;
-	:log error "DuckDNS: ipv6 mode enabled"
+# Get current ip from interface
+:if $ipv4Mode do={
+	:set currentIPv4 value=[/ip address get [find where interface=$wanInterface] value-name=address]
+	:set currentIPv4 value=[:pick $currentIPv4 -1 [:find $currentIPv4 "/" -1] ]
+}
+:if $ipv6Mode do={
+	:set currentIPv6 value=[/ipv6 address get [find where global=yes interface=$lanInterface from-pool=$ipv6Pool] value-name=address]
+	:set currentIPv6 value=[:pick $currentIPv6 -1 [:find $currentIPv6 "/" -1] ]
 }
 
-# Resolve current DuckDNS subdomain ip address
-:do {:set previousIP [:resolve $duckdnsFullDomain]} on-error={ :log warning "DuckDNS: Could not resolve dns name $duckdnsFullDomain" };
+# File name for ip record
+:local previousIPv4File ("duckdns-".$duckdnsSubDomain)
+:local previousIPv6File ("duckdns-".$duckdnsSubDomain."-v6")
 
-# Detect our public IP adress useing special services
-:do {:set currentIP ([/tool fetch url=$ipDetectService1 output=user as-value]->"data")} on-error={
-		:log error "DuckDNS: Service does not work: $ipDetectService1"
-		#Second try in case the first one is failed
-		:do {:set currentIP ([/tool fetch url=$ipDetectService2 output=user as-value]->"data")} on-error={
-			:log error "DuckDNS: Service does not work: $ipDetectService2"
-		};
+# Function to get previous ip from file
+:local getPreviousIP do={
+	# Initial file to record current ip for domain
+	:if ([:len [/file find where name=($previousIPFile.".txt")]] < 1 ) do={
+		/file print file=$previousIPFile
+		:delay 2s
+		/file set ($previousIPFile.".txt") contents=$defaultContents
 	};
-	
+	# Get previous ip from file
+	:local previousIP value=[/file get [find where name=($previousIPFile.".txt") ] value-name=contents];
+	:return $previousIP
+}
 
-:log info "DuckDNS: DNS IP ($previousIP), current internet IP ($currentIP)"
+# Get previous ip from file
+:if $ipv4Mode do {
+	:set previousIPv4 [$getPreviousIP previousIPFile=$previousIPv4File defaultContents="0.0.0.0"]
+	:log info "DuckDNS: DNS IP $previousIPv4, current IPv4 $currentIPv4"
+}
+:if $ipv6Mode do {
+	:set previousIPv6 [$getPreviousIP previousIPFile=$previousIPv6File defaultContents="::1"]
+	:log info "DuckDNS: DNS IP $previousIPv6, current IPv6 $currentIPv6"
+}
 
-:if ($currentIP != $previousIP) do={
-	:log info "DuckDNS: Current IP $currentIP is not equal to previous IP, update needed"
-	:log info "DuckDNS: Sending update for $duckdnsFullDomain"
-	:local duckRequestUrl "https://www.duckdns.org/update\?domains=$duckdnsSubDomain&token=$duckdnsToken&ip=$currentIP&verbose=true"
+# Update ip if needed
+:if ($currentIPv4 != $previousIPv4 || $currentIPv6 != $previousIPv6) do={
+	:log info "DuckDNS: Current IP is not equal to previous IP, update needed"
+	:log info "DuckDNS: Sending update for $duckdnsSubDomain.duckdns.org"
+	:local duckRequestUrl "https://www.duckdns.org/update\?domains=$duckdnsSubDomain&token=$duckdnsToken&verbose=true"
+	if ($ipv4Mode && $ipv6Mode) do={
+		:set duckRequestUrl ($duckRequestUrl."&ip=".$currentIPv4."&ipv6=".$currentIPv6)
+	} else={
+		if $ipv4Mode do={
+			:set duckRequestUrl ($duckRequestUrl."&ip=".$currentIPv4)
+		}
+		if $ipv6Mode do={
+			:set duckRequestUrl ($duckRequestUrl."&ip=".$currentIPv6)
+		}
+	}
 	:log info "DuckDNS: using GET request: $duckRequestUrl"
 
 	:local duckResponse
@@ -72,17 +86,18 @@ if ($ipv6mode = true) do={
 				:error "DuckDNS: bye!"
 			}
 	}
-
-	# Checking server's answer
+	# Check server's answer
 	:if ([:pick $duckResponse 0 2] = "OK") do={
-		:log info "DuckDNS: New IP address ($currentIP) for domain $duckdnsFullDomain has been successfully set!"
+		:log info "DuckDNS: New IP address $currentIPv4 / $currentIPv6 for domain $duckdnsFullDomain has been successfully set!"
+		# Write current ip to file
+		if $ipv4Mode do={
+			/file set ($previousIPv4File.".txt") contents=$currentIPv4
+		}
+		if $ipv6Mode do={
+			/file set ($previousIPv6File.".txt") contents=$currentIPv6
+		}
 	} else={ 
 		:log warning "DuckDNS: There is an error occurred during IP address update, server did not answer with \"OK\" response!"
 	}
-
-	:log info "DuckDNS: server answer is: $duckResponse"
-} else={
-	:log info "DuckDNS: Previous IP ($previousIP) is equal to current IP ($currentIP), no need to update"
 }
-
-:log warning message="END: DuckDNS.org DDNS Update finished"
+:log info message="END: DuckDNS.org DDNS Update finished"
