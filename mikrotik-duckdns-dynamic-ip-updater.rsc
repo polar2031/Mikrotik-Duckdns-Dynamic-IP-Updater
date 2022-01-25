@@ -96,7 +96,7 @@
 		if $ipv6Mode do={
 			/file set ($previousIPv6File.".txt") contents=$currentIPv6
 		}
-	} else={ 
+	} else={
 		:log warning "DuckDNS: There is an error occurred during IP address update, server did not answer with \"OK\" response!"
 	}
 }
